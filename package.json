@@ -1,0 +1,30 @@
+{
+	"name": "ipad-pen-tablet-mvp",
+	"private": true,
+	"version": "0.0.1",
+	"type": "module",
+	"scripts": {
+		"dev": "vite --host 0.0.0.0",
+		"build": "vite build",
+		"preview": "vite preview --host 0.0.0.0",
+		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
+		"receiver": "node receiver/server.js",
+		"receiver:mouse": "node receiver/server.js --mouse",
+		"receiver:pencil": "node receiver/server.js --mouse --pencil"
+	},
+	"dependencies": {
+		"@sveltejs/adapter-auto": "^7.0.1",
+		"@sveltejs/kit": "^2.60.1",
+		"@sveltejs/vite-plugin-svelte": "^7.1.2",
+		"robotjs": "^0.7.1",
+		"svelte": "^5.55.8",
+		"vite": "^8.0.13",
+		"ws": "^8.20.1"
+	},
+	"devDependencies": {
+		"@types/node": "^25.9.1",
+		"@types/ws": "^8.18.1",
+		"svelte-check": "^4.4.8",
+		"typescript": "^6.0.3"
+	}
+}
