@@ -1,6 +1,5 @@
 <script lang="ts">
-	import { onDestroy } from 'svelte';
-	import { SvelteMap } from 'svelte/reactivity';
+	import { onMount, onDestroy } from 'svelte';
 
 	type ConnectionState = 'idle' | 'connecting' | 'connected' | 'closed' | 'error';
 	type PointerPhase = 'down' | 'move' | 'up' | 'cancel';
@@ -37,8 +36,12 @@
 	let seq = 0;
 	let sentSinceTick = 0;
 	let receivedAcksSinceTick = 0;
-	let pendingAcks = new SvelteMap<number, number>();
+	let pendingAcks = new Map<number, number>();
 	let tickTimer: ReturnType<typeof setInterval> | null = null;
+	let lastRttMs = 0;
+	let bestRttMs = 0;
+	let surfaceRect: DOMRect | null = null;
+	let padEl: HTMLDivElement;
 
 	let serverUrl = $state(defaultServerUrl());
 	let connectionState = $state<ConnectionState>('idle');
@@ -53,6 +56,7 @@
 		lastRttMs: 0,
 		bestRttMs: 0
 	});
+
 
 	let connectionLabel = $derived(
 		connectionState === 'connected'
@@ -141,9 +145,8 @@
 			receivedAcksSinceTick += 1;
 
 			const rtt = performance.now() - sentAt;
-			stats.lastRttMs = rtt;
-			stats.bestRttMs = stats.bestRttMs === 0 ? rtt : Math.min(stats.bestRttMs, rtt);
-			stats.pending = pendingAcks.size;
+			lastRttMs = rtt;
+			bestRttMs = bestRttMs === 0 ? rtt : Math.min(bestRttMs, rtt);
 		} catch {
 			// Ignore non-MVP messages from experimental receivers.
 		}
@@ -166,26 +169,42 @@
 		event.preventDefault();
 		const surface = event.currentTarget as HTMLDivElement;
 
+		// Compute rect once per stroke (on pointerdown) — avoids forced layout on every pointermove.
 		if (phase === 'down') {
+			surfaceRect = surface.getBoundingClientRect();
 			surface.setPointerCapture(event.pointerId);
 		}
+		const rect = surfaceRect ?? surface.getBoundingClientRect();
+
+		// Update HUD from the dispatched event — once per dispatch, not per coalesced event.
+		lastSample = {
+			phase,
+			pointerType: event.pointerType,
+			x: event.clientX - rect.left,
+			y: event.clientY - rect.top,
+			pressure: event.pressure,
+			tiltX: event.tiltX,
+			tiltY: event.tiltY,
+			buttons: event.buttons
+		};
+
+		if ((phase === 'up' || phase === 'cancel') && surface.hasPointerCapture(event.pointerId)) {
+			surface.releasePointerCapture(event.pointerId);
+		}
+
+		if (!socket || socket.readyState !== WebSocket.OPEN) return;
 
 		const events =
 			phase === 'move' && typeof event.getCoalescedEvents === 'function'
 				? event.getCoalescedEvents()
 				: [event];
 
-		for (const sample of events) {
-			sendPointerSample(surface, sample, phase);
-		}
-
-		if ((phase === 'up' || phase === 'cancel') && surface.hasPointerCapture(event.pointerId)) {
-			surface.releasePointerCapture(event.pointerId);
+		for (const e of events) {
+			sendPointerSample(rect, e, phase);
 		}
 	}
 
-	function sendPointerSample(surface: HTMLDivElement, event: PointerEvent, phase: PointerPhase) {
-		const rect = surface.getBoundingClientRect();
+	function sendPointerSample(rect: DOMRect, event: PointerEvent, phase: PointerPhase) {
 		const x = event.clientX - rect.left;
 		const y = event.clientY - rect.top;
 		const sampleSeq = ++seq;
@@ -212,24 +231,9 @@
 			clientWallTime: Date.now()
 		};
 
-		lastSample = {
-			phase: sample.phase,
-			pointerType: sample.pointerType,
-			x: sample.x,
-			y: sample.y,
-			pressure: sample.pressure,
-			tiltX: sample.tiltX,
-			tiltY: sample.tiltY,
-			buttons: sample.buttons
-		};
-
-		if (!socket || socket.readyState !== WebSocket.OPEN) return;
-
 		pendingAcks.set(sampleSeq, now);
-		socket.send(JSON.stringify(sample));
+		socket!.send(JSON.stringify(sample));
 
-		stats.sentTotal += 1;
-		stats.pending = pendingAcks.size;
 		sentSinceTick += 1;
 	}
 
@@ -238,7 +242,10 @@
 		tickTimer = setInterval(() => {
 			stats.sentPerSecond = sentSinceTick * 4;
 			stats.acksPerSecond = receivedAcksSinceTick * 4;
+			stats.sentTotal += sentSinceTick;
 			stats.pending = pendingAcks.size;
+			stats.lastRttMs = lastRttMs;
+			stats.bestRttMs = bestRttMs;
 			sentSinceTick = 0;
 			receivedAcksSinceTick = 0;
 		}, 250);
@@ -259,6 +266,29 @@
 		await document.documentElement.requestFullscreen?.();
 	}
 
+	onMount(() => {
+		const opts: AddEventListenerOptions = { passive: false };
+		const onDown = (e: PointerEvent) => handlePointer(e, 'down');
+		const onMove = (e: PointerEvent) => handlePointer(e, 'move');
+		const onUp = (e: PointerEvent) => handlePointer(e, 'up');
+		const onCancel = (e: PointerEvent) => handlePointer(e, 'cancel');
+		const onCtx = (e: Event) => e.preventDefault();
+
+		padEl.addEventListener('pointerdown', onDown, opts);
+		padEl.addEventListener('pointermove', onMove, opts);
+		padEl.addEventListener('pointerup', onUp, opts);
+		padEl.addEventListener('pointercancel', onCancel, opts);
+		padEl.addEventListener('contextmenu', onCtx);
+
+		return () => {
+			padEl.removeEventListener('pointerdown', onDown);
+			padEl.removeEventListener('pointermove', onMove);
+			padEl.removeEventListener('pointerup', onUp);
+			padEl.removeEventListener('pointercancel', onCancel);
+			padEl.removeEventListener('contextmenu', onCtx);
+		};
+	});
+
 	onDestroy(disconnect);
 </script>
 
@@ -268,13 +298,9 @@
 
 <div
 	class="pad"
+	bind:this={padEl}
 	role="application"
 	aria-label="Pen tablet input surface"
-	onpointerdown={(event) => handlePointer(event, 'down')}
-	onpointermove={(event) => handlePointer(event, 'move')}
-	onpointerup={(event) => handlePointer(event, 'up')}
-	onpointercancel={(event) => handlePointer(event, 'cancel')}
-	oncontextmenu={(event) => event.preventDefault()}
 >
 	{#if showHud}
 		<section class="hud" aria-label="Connection controls">
@@ -334,6 +360,8 @@
 		width: 100%;
 		height: 100%;
 		overflow: hidden;
+		touch-action: none;
+		overscroll-behavior: none;
 		background: #050505;
 		color: #f5f5f5;
 		font-family:

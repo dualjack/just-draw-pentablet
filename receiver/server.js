@@ -12,7 +12,6 @@ const wss = new WebSocketServer({ port });
 const clients = new Map();
 const robot = await loadRobot();
 let mouseDown = false;
-let applyBusy = false;
 
 function localAddresses() {
 	try {
@@ -61,41 +60,34 @@ async function loadRobot() {
 
 function applyMouseInput(sample) {
 	if (!robot || !shouldUsePointer(sample)) return;
-	if (applyBusy) return;
-
-	applyBusy = true;
 
 	const { mouse, Button, screenWidth, screenHeight } = robot;
 	const x = clamp(Math.round(sample.nx * (screenWidth - 1)), 0, screenWidth - 1);
 	const y = clamp(Math.round(sample.ny * (screenHeight - 1)), 0, screenHeight - 1);
 
-	let p = mouse.setPosition({ x, y });
+	mouse.setPosition({ x, y }).catch((err) =>
+		console.error('[mouse] setPosition error:', err instanceof Error ? err.message : err)
+	);
 
 	if (pencilMode) {
-		const isPressed =
+		const want =
 			sample.phase !== 'up' &&
 			sample.phase !== 'cancel' &&
 			Number(sample.pressure) >= pressureThreshold;
-		if (isPressed !== mouseDown) {
-			p = p.then(() =>
-				isPressed ? mouse.pressButton(Button.LEFT) : mouse.releaseButton(Button.LEFT)
-			);
-			mouseDown = isPressed;
-		}
+		setMouseButton(want);
 	} else {
-		if (sample.phase === 'down' && !mouseDown) {
-			p = p.then(() => mouse.pressButton(Button.LEFT));
-			mouseDown = true;
-		} else if ((sample.phase === 'up' || sample.phase === 'cancel') && mouseDown) {
-			p = p.then(() => mouse.releaseButton(Button.LEFT));
-			mouseDown = false;
-		}
+		if (sample.phase === 'down') setMouseButton(true);
+		else if (sample.phase === 'up' || sample.phase === 'cancel') setMouseButton(false);
 	}
+}
 
-	p.catch((err) => console.error('[mouse] error:', err instanceof Error ? err.message : err)).finally(
-		() => {
-			applyBusy = false;
-		}
+function setMouseButton(pressed) {
+	if (!robot || pressed === mouseDown) return;
+	mouseDown = pressed;
+	const { mouse, Button } = robot;
+	const op = pressed ? mouse.pressButton(Button.LEFT) : mouse.releaseButton(Button.LEFT);
+	op.catch((err) =>
+		console.error('[mouse] button error:', err instanceof Error ? err.message : err)
 	);
 }
 
@@ -158,10 +150,7 @@ wss.on('connection', (ws, request) => {
 
 	ws.on('close', () => {
 		clients.delete(ws);
-		if (robot && mouseDown) {
-			robot.mouse.releaseButton(robot.Button.LEFT).catch(() => {});
-			mouseDown = false;
-		}
+		setMouseButton(false);
 		console.log('[disconnect]');
 	});
 });
