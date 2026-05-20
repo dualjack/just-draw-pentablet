@@ -19,6 +19,12 @@ Install dependencies:
 npm install
 ```
 
+`robotjs` is optional. Install succeeds without it; the default receiver only logs pointer events. Mouse control (`receiver:mouse`, `receiver:pencil`) needs `robotjs`, which is a native addon on Windows. If mouse mode reports `robotjs unavailable`, install [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) with the **Desktop development with C++** workload, then run:
+
+```sh
+npm install robotjs
+```
+
 Start the receiver on the Windows machine:
 
 ```sh

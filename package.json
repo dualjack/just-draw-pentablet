@@ -13,10 +13,10 @@
 		"receiver:pencil": "node receiver/server.js --mouse --pencil"
 	},
 	"dependencies": {
+		"@nut-tree-fork/nut-js": "^4.2.6",
 		"@sveltejs/adapter-auto": "^7.0.1",
 		"@sveltejs/kit": "^2.60.1",
 		"@sveltejs/vite-plugin-svelte": "^7.1.2",
-		"robotjs": "^0.7.1",
 		"svelte": "^5.55.8",
 		"vite": "^8.0.13",
 		"ws": "^8.20.1"

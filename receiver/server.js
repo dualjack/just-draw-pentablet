@@ -1,6 +1,5 @@
 import os from 'node:os';
 import process from 'node:process';
-import { createRequire } from 'node:module';
 import { WebSocketServer } from 'ws';
 
 const port = Number(process.env.PORT ?? 8787);
@@ -11,8 +10,9 @@ const pressureThreshold = Number(process.env.PRESSURE_THRESHOLD ?? 0.08);
 const wss = new WebSocketServer({ port });
 
 const clients = new Map();
-const robot = loadRobot();
+const robot = await loadRobot();
 let mouseDown = false;
+let applyBusy = false;
 
 function localAddresses() {
 	try {
@@ -40,16 +40,20 @@ function createClientState() {
 	};
 }
 
-function loadRobot() {
+async function loadRobot() {
 	if (!mouseEnabled) return null;
 
 	try {
-		const require = createRequire(import.meta.url);
-		const robotjs = require('robotjs');
-		robotjs.setMouseDelay(0);
-		return robotjs;
+		const { mouse, screen, Button } = await import('@nut-tree-fork/nut-js');
+		mouse.config.autoDelayMs = 0;
+		mouse.config.mouseSpeed = 9999;
+
+		const screenWidth = await screen.width();
+		const screenHeight = await screen.height();
+
+		return { mouse, Button, screenWidth, screenHeight };
 	} catch (error) {
-		console.error('[mouse] robotjs could not be loaded, mouse control disabled');
+		console.error('[mouse] nut-js could not be loaded, mouse control disabled');
 		console.error(error instanceof Error ? error.message : error);
 		return null;
 	}
@@ -57,41 +61,47 @@ function loadRobot() {
 
 function applyMouseInput(sample) {
 	if (!robot || !shouldUsePointer(sample)) return;
+	if (applyBusy) return;
 
-	const screen = robot.getScreenSize();
-	const x = clamp(Math.round(sample.nx * (screen.width - 1)), 0, screen.width - 1);
-	const y = clamp(Math.round(sample.ny * (screen.height - 1)), 0, screen.height - 1);
+	applyBusy = true;
 
-	robot.moveMouse(x, y);
+	const { mouse, Button, screenWidth, screenHeight } = robot;
+	const x = clamp(Math.round(sample.nx * (screenWidth - 1)), 0, screenWidth - 1);
+	const y = clamp(Math.round(sample.ny * (screenHeight - 1)), 0, screenHeight - 1);
+
+	let p = mouse.setPosition({ x, y });
 
 	if (pencilMode) {
 		const isPressed =
 			sample.phase !== 'up' &&
 			sample.phase !== 'cancel' &&
 			Number(sample.pressure) >= pressureThreshold;
-		setMouseButton(isPressed);
-		return;
+		if (isPressed !== mouseDown) {
+			p = p.then(() =>
+				isPressed ? mouse.pressButton(Button.LEFT) : mouse.releaseButton(Button.LEFT)
+			);
+			mouseDown = isPressed;
+		}
+	} else {
+		if (sample.phase === 'down' && !mouseDown) {
+			p = p.then(() => mouse.pressButton(Button.LEFT));
+			mouseDown = true;
+		} else if ((sample.phase === 'up' || sample.phase === 'cancel') && mouseDown) {
+			p = p.then(() => mouse.releaseButton(Button.LEFT));
+			mouseDown = false;
+		}
 	}
 
-	if (sample.phase === 'down') {
-		setMouseButton(true);
-	}
-
-	if (sample.phase === 'up' || sample.phase === 'cancel') {
-		setMouseButton(false);
-	}
+	p.catch((err) => console.error('[mouse] error:', err instanceof Error ? err.message : err)).finally(
+		() => {
+			applyBusy = false;
+		}
+	);
 }
 
 function shouldUsePointer(sample) {
 	if (pointerFilter !== 'any' && sample.pointerType !== pointerFilter) return false;
 	return Number.isFinite(sample.nx) && Number.isFinite(sample.ny);
-}
-
-function setMouseButton(pressed) {
-	if (!robot || pressed === mouseDown) return;
-
-	robot.mouseToggle(pressed ? 'down' : 'up', 'left');
-	mouseDown = pressed;
 }
 
 function clamp(value, min, max) {
@@ -148,7 +158,10 @@ wss.on('connection', (ws, request) => {
 
 	ws.on('close', () => {
 		clients.delete(ws);
-		setMouseButton(false);
+		if (robot && mouseDown) {
+			robot.mouse.releaseButton(robot.Button.LEFT).catch(() => {});
+			mouseDown = false;
+		}
 		console.log('[disconnect]');
 	});
 });
@@ -171,8 +184,12 @@ setInterval(() => {
 }, 1000);
 
 console.log(`iPad Pen Tablet MVP receiver listening on ws://0.0.0.0:${port}`);
-console.log(`[mouse] ${robot ? 'enabled' : 'disabled'}${mouseEnabled && !robot ? ' (robotjs unavailable)' : ''}`);
-console.log(`[input] pointer=${pointerFilter} pencilMode=${pencilMode ? 'enabled' : 'disabled'} pressureThreshold=${pressureThreshold}`);
+console.log(
+	`[mouse] ${robot ? 'enabled' : 'disabled'}${mouseEnabled && !robot ? ' (nut-js unavailable)' : ''}`
+);
+console.log(
+	`[input] pointer=${pointerFilter} pencilMode=${pencilMode ? 'enabled' : 'disabled'} pressureThreshold=${pressureThreshold}`
+);
 for (const address of localAddresses()) {
 	console.log(`LAN URL: ws://${address}:${port}`);
 }
